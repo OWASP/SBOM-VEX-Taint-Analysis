@@ -1,0 +1,96 @@
+{
+  "provider": "autogen_agentchat.teams.RoundRobinGroupChat",
+  "component_type": "team",
+  "version": 1,
+  "component_version": 1,
+  "description": "Local Ollama agent for analysing CycloneDX SBOM documents.",
+  "label": "VexGen-Local-Ollama",
+  "config": {
+    "participants": [
+      {
+        "provider": "autogen_agentchat.agents.AssistantAgent",
+        "component_type": "agent",
+        "version": 1,
+        "component_version": 1,
+        "description": "Assistant agent using a local Ollama model to analyse CycloneDX SBOM JSON.",
+        "label": "LocalOllamaSBOMAgent",
+        "config": {
+          "name": "local_ollama_sbom_agent",
+          "model_client": {
+            "provider": "autogen_ext.models.openai.OpenAIChatCompletionClient",
+            "component_type": "model",
+            "version": 1,
+            "component_version": 1,
+            "description": "OpenAI-compatible client pointing to a local Ollama server.",
+            "label": "LocalOllamaOpenAICompatClient",
+            "config": {
+              "model": "deepseek-r1:8b",
+              "base_url": "http://localhost:11434/v1",
+              "api_key": "local",
+              "model_info": {
+                "vision": false,
+                "function_calling": false,
+                "json_output": false,
+                "structured_output": false,
+                "family": "unknown"
+              },
+              "temperature": 0.1,
+              "max_tokens": 300
+            }
+          },
+          "workbench": null,
+          "model_context": {
+            "provider": "autogen_core.model_context.UnboundedChatCompletionContext",
+            "component_type": "chat_completion_context",
+            "version": 1,
+            "component_version": 1,
+            "description": "Unbounded chat completion context.",
+            "label": "UnboundedChatCompletionContext",
+            "config": {}
+          },
+          "description": "CycloneDX SBOM assistant using local Ollama model.",
+          "system_message": "You are a strict SBOM checker.\n\nRules:\n- If bomFormat is \"CycloneDX\", then Format must be exactly: CycloneDX\n- Do not output \"JSON\" as a format\n\nOutput EXACTLY in this structure with line breaks:\nFormat: <value>\nSpec Version: <value>\nComponent Count: <number>\nSecurity Issues:\n- <component>@<version>: <missing fields>\nRecommended Fixes:\n- <fixes>\nTERMINATE\n\nConstraints:\n- Missing purl, licenses, hashes = Security Issues\n- No explanations\n- No extra text\n- Max 120 words",
+          "model_client_stream": false,
+          "reflect_on_tool_use": false,
+          "tool_call_summary_format": "{result}",
+          "metadata": {}
+        }
+      }
+    ],
+    "termination_condition": {
+      "provider": "autogen_agentchat.base.OrTerminationCondition",
+      "component_type": "termination",
+      "version": 1,
+      "component_version": 1,
+      "label": "OrTerminationCondition",
+      "config": {
+        "conditions": [
+          {
+            "provider": "autogen_agentchat.conditions.TextMentionTermination",
+            "component_type": "termination",
+            "version": 1,
+            "component_version": 1,
+            "description": "Terminate when TERMINATE is mentioned.",
+            "label": "TextMentionTermination",
+            "config": {
+              "text": "TERMINATE"
+            }
+          },
+          {
+            "provider": "autogen_agentchat.conditions.MaxMessageTermination",
+            "component_type": "termination",
+            "version": 1,
+            "component_version": 1,
+            "description": "Terminate after max messages.",
+            "label": "MaxMessageTermination",
+            "config": {
+              "max_messages": 10,
+              "include_agent_event": false
+            }
+          }
+        ]
+      }
+    },
+    "emit_team_events": false
+  }
+}
