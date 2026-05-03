@@ -1,0 +1,113 @@
+{
+  "provider": "autogen_agentchat.teams.RoundRobinGroupChat",
+  "component_type": "team",
+  "version": 1,
+  "component_version": 1,
+  "description": "Agent that analyses OWASP CycloneDX SBOM documents.",
+  "label": "VexGen",
+  "config": {
+    "participants": [
+      {
+        "provider": "autogen_agentchat.agents.AssistantAgent",
+        "component_type": "agent",
+        "version": 1,
+        "component_version": 1,
+        "description": "Assistant agent that validates CycloneDX SBOM JSON.",
+        "label": "SBOMAssistantAgent",
+        "config": {
+          "name": "assistant_agent",
+          "model_client": {
+            "provider": "autogen_ext.models.openai.OpenAIChatCompletionClient",
+            "component_type": "model",
+            "version": 1,
+            "component_version": 1,
+            "description": "Chat completion client for OpenAI hosted models.",
+            "label": "OpenAIChatCompletionClient",
+            "config": {
+              "model": "gpt-4o-mini"
+            }
+          },
+          "workbench": {
+            "provider": "autogen_core.tools.StaticWorkbench",
+            "component_type": "workbench",
+            "version": 1,
+            "component_version": 1,
+            "description": "Workbench with CycloneDX SBOM analysis tool.",
+            "label": "StaticWorkbench",
+            "config": {
+              "tools": [
+                {
+                  "provider": "autogen_core.tools.FunctionTool",
+                  "component_type": "tool",
+                  "version": 1,
+                  "component_version": 1,
+                  "description": "Analyse and validate CycloneDX SBOM JSON.",
+                  "label": "FunctionTool",
+                  "config": {
+                    "source_code": "def analyse_sbom(sbom_text: str) -> str:\n    try:\n        data = json.loads(sbom_text)\n    except Exception as e:\n        return f\"Validity: Invalid JSON\\nError: {str(e)}\"\n\n    if data.get(\"bomFormat\") != \"CycloneDX\":\n        return \"Format: Not CycloneDX\\nValidity: Failed\"\n\n    findings = []\n    findings.append(\"Format: CycloneDX\")\n    findings.append(f\"Spec Version: {data.get('specVersion', 'Missing')}\")\n\n    components = data.get(\"components\", [])\n    findings.append(f\"Component Count: {len(components)}\")\n\n    issues = []\n\n    for c in components:\n        name = c.get(\"name\", \"unknown\")\n        version = c.get(\"version\", \"unknown\")\n        comp_issues = []\n\n        if \"purl\" not in c:\n            comp_issues.append(\"missing purl\")\n        if \"licenses\" not in c:\n            comp_issues.append(\"missing license\")\n        if \"hashes\" not in c:\n            comp_issues.append(\"missing hash\")\n\n        if comp_issues:\n            issues.append(f\"{name}@{version}: \" + \", \".join(comp_issues))\n\n    if issues:\n        findings.append(\"Security Issues:\")\n        findings.extend(issues)\n    else:\n        findings.append(\"Security Issues: None detected\")\n\n    return \"\\n\".join(findings)\n",
+                    "name": "analyse_sbom",
+                    "description": "Analyse a CycloneDX SBOM JSON string and report format, validity, required fields, and component count.",
+                    "global_imports": [
+                      "json"
+                    ],
+                    "has_cancellation_support": false
+                  }
+                }
+              ]
+            }
+          },
+          "model_context": {
+            "provider": "autogen_core.model_context.UnboundedChatCompletionContext",
+            "component_type": "chat_completion_context",
+            "version": 1,
+            "component_version": 1,
+            "description": "Unbounded chat completion context.",
+            "label": "UnboundedChatCompletionContext",
+            "config": {}
+          },
+          "description": "CycloneDX SBOM assistant.",
+          "system_message": "You are an OWASP CycloneDX SBOM analysis assistant. When the user provides SBOM JSON, use the analyse_sbom tool. Report findings clearly. If the user asks a non-SBOM test question, answer directly. When finished, say TERMINATE.",
+          "model_client_stream": false,
+          "reflect_on_tool_use": true,
+          "tool_call_summary_format": "{result}",
+          "metadata": {}
+        }
+      }
+    ],
+    "termination_condition": {
+      "provider": "autogen_agentchat.base.OrTerminationCondition",
+      "component_type": "termination",
+      "version": 1,
+      "component_version": 1,
+      "label": "OrTerminationCondition",
+      "config": {
+        "conditions": [
+          {
+            "provider": "autogen_agentchat.conditions.TextMentionTermination",
+            "component_type": "termination",
+            "version": 1,
+            "component_version": 1,
+            "description": "Terminate the conversation if TERMINATE is mentioned.",
+            "label": "TextMentionTermination",
+            "config": {
+              "text": "TERMINATE"
+            }
+          },
+          {
+            "provider": "autogen_agentchat.conditions.MaxMessageTermination",
+            "component_type": "termination",
+            "version": 1,
+            "component_version": 1,
+            "description": "Terminate after a maximum number of messages.",
+            "label": "MaxMessageTermination",
+            "config": {
+              "max_messages": 10,
+              "include_agent_event": false
+            }
+          }
+        ]
+      }
+    },
+    "emit_team_events": false
+  }
+}
