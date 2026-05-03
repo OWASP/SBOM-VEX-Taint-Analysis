@@ -13,6 +13,8 @@
 
 Generating an SBOM surfaces hundreds of CVEs. In practice, over 90% are not exploitable in a specific product's runtime context. Without a Vulnerability Exploitability eXchange (VEX) document, every downstream tool — Dependency-Track, release gates, procurement checklists — drowns in false positives.
 
+Read the WIKI for more technical details ans results of testing
+
 Manual VEX generation is time-consuming and does not scale. A skilled analyst can spend hours assessing a single component. A production SBOM may contain 500–2,000 components.
 
 This project automates that reasoning pipeline — securely, without vendor lock-in, with all data remaining on your infrastructure.
