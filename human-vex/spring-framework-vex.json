@@ -1,0 +1,206 @@
+{
+  "_comment": "OWASP SBOM-VEX-Taint-Analysis Benchmark Record — Layer 1: CycloneDX VEX + Layer 2: Annotation",
+
+  "cyclonedx_vex": {
+    "bomFormat": "CycloneDX",
+    "specVersion": "1.6",
+    "version": 1,
+    "serialNumber": "urn:uuid:spring-web-aalto-xml-dos-001",
+    "metadata": {
+      "timestamp": "2026-05-15T00:00:00Z",
+      "tools": [
+        {
+          "name": "sbom-vex-agent",
+          "version": "1.0.0",
+          "vendor": "OWASP SBOM-VEX-Taint-Analysis Project"
+        }
+      ],
+      "authors": [
+        {
+          "name": "Johanna Curiel",
+          "organization": "OWASP"
+        }
+      ]
+    },
+    "vulnerabilities": [
+      {
+        "id": "CVE-2024-AALTO-SPRING-WEB",
+        "source": {
+          "name": "NVD",
+          "url": "https://github.com/owaspjocur/spring-framework/security/dependabot/1"
+        },
+        "ratings": [
+          {
+            "source": { "name": "NVD" },
+            "score": 7.5,
+            "severity": "high",
+            "method": "CVSSv3",
+            "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          }
+        ],
+        "affects": [
+          {
+            "ref": "pkg:maven/com.fasterxml/aalto-xml",
+            "versions": [{ "range": "vers:maven/<1.3.3" }]
+          }
+        ],
+        "analysis": {
+          "state": "affected",
+          "justification": "vulnerable_code_in_execute_path",
+          "detail": "aalto-xml is declared optional in spring-web.gradle but is actively invoked at runtime by XmlEventDecoder.java when present on the classpath. XmlEventDecoder uses ClassUtils.isPresent() to detect aalto-xml and explicitly selects the Aalto-based decoding path via AaltoDataBufferToXmlEvent. Applications using Spring WebFlux with XML decoding that have aalto-xml on the classpath are exposed to the DoS vulnerability when processing untrusted XML input from network sources.",
+          "response": ["will_not_fix"],
+          "workaround": "Exclude aalto-xml from the runtime classpath if XML decoding via XmlEventDecoder is not required. If XML decoding is required, ensure input is validated or sourced only from trusted parties."
+        }
+      }
+    ]
+  },
+
+  "benchmark_annotation": {
+    "triple_id": "maven-spring-web-aalto-xml-CVE-2024-dos-001",
+    "benchmark_version": "1.0",
+    "project": {
+      "name": "spring-framework",
+      "module": "spring-web",
+      "version": "main",
+      "repository": "https://github.com/spring-projects/spring-framework",
+      "ecosystem": "maven"
+    },
+    "component": {
+      "purl": "pkg:maven/com.fasterxml/aalto-xml",
+      "declared_scope": "optional",
+      "scope_source": "spring-web/spring-web.gradle",
+      "component_type": "optional_xml_parser"
+    },
+    "cve": {
+      "id": "CVE-2024-AALTO-SPRING-WEB",
+      "type": "DoS",
+      "description": "Malformed XML input triggers denial of service in aalto-xml parser",
+      "cvss_score": 7.5,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      "attack_vector": "Network",
+      "attack_complexity": "Low",
+      "privileges_required": "None",
+      "user_interaction": "None",
+      "scope": "Unchanged",
+      "confidentiality_impact": "None",
+      "integrity_impact": "None",
+      "availability_impact": "High"
+    },
+
+    "evidence_chain": {
+
+      "scope_signal": {
+        "step": 1,
+        "source_file": "spring-web/spring-web.gradle",
+        "source_type": "build_system",
+        "evidence": "optional(\"com.fasterxml:aalto-xml\") // out of order to avoid XML parser override",
+        "interpretation": "Declared optional — not transitively inherited by consuming applications. Only present at runtime if explicitly added by downstream consumer.",
+        "deterministic": true,
+        "confidence": "high",
+        "initial_verdict_signal": "not_affected",
+        "note": "This signal alone would suggest not_affected. It is a red herring without deeper analysis."
+      },
+
+      "runtime_signal_initial": {
+        "step": 2,
+        "source_file": "spring-beans/src/main/java/org/springframework/beans/factory/xml/DefaultDocumentLoader.java",
+        "source_type": "source_code",
+        "evidence": "DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance()",
+        "interpretation": "Spring's internal XML loading for bean definitions uses JAXP, not aalto-xml. The in-code comment explicitly scopes this to application configuration files and notes XXE requires write access to config — not a network attack surface.",
+        "deterministic": true,
+        "confidence": "high",
+        "initial_verdict_signal": "not_affected",
+        "note": "Second red herring. A pipeline that stops here will produce a wrong verdict."
+      },
+
+      "code_path_signal": {
+        "step": 3,
+        "source_file": "spring-web/src/main/java/org/springframework/http/codec/xml/XmlEventDecoder.java",
+        "source_type": "source_code",
+        "evidence_lines": [
+          "private static final boolean AALTO_PRESENT = ClassUtils.isPresent(\"com.fasterxml.aalto.AsyncXMLStreamReader\", XmlEventDecoder.class.getClassLoader());",
+          "boolean useAalto = AALTO_PRESENT;",
+          "// when useAalto is true, decode() uses AaltoDataBufferToXmlEvent"
+        ],
+        "interpretation": "Spring WebFlux's XmlEventDecoder explicitly detects aalto-xml at runtime and actively selects the Aalto-based decoding path when present. This is not passive classpath presence — it is a deliberate runtime preference for aalto-xml over alternatives.",
+        "deterministic": true,
+        "confidence": "high",
+        "verdict_signal": "affected",
+        "note": "This is the decisive finding. Requires source code analysis beyond SBOM inspection."
+      },
+
+      "context_signal": {
+        "step": 4,
+        "source_type": "semantic_reasoning",
+        "deterministic": false,
+        "conditions_for_exploitability": [
+          "aalto-xml is present on the runtime classpath (explicitly added by consumer or transitive pull)",
+          "Application uses Spring WebFlux (reactive stack) with XML media type support",
+          "XmlEventDecoder is active in the codec pipeline",
+          "Application accepts XML input from untrusted network sources"
+        ],
+        "conditions_assessment": "All four conditions are realistic and co-occur in Spring WebFlux applications doing XML REST APIs. Attack complexity is Low per CVSS — no special configuration required beyond classpath presence.",
+        "confidence": "medium",
+        "note": "Cannot determine from SBOM or Spring source alone whether a specific consuming application satisfies all conditions. Consumer-context dependent."
+      }
+    },
+
+    "red_herrings": [
+      {
+        "signal": "optional scope in gradle",
+        "why_misleading": "Optional means not transitively inherited, but does not mean never present at runtime. Consumer can and does explicitly add it.",
+        "pipeline_risk": "A pipeline that stops at dependency scope will produce wrong verdict"
+      },
+      {
+        "signal": "DefaultDocumentLoader uses JAXP",
+        "why_misleading": "Spring has multiple XML processing paths. JAXP path is for bean definition loading, not reactive HTTP codec processing.",
+        "pipeline_risk": "A pipeline that generalizes from one XML path to all XML paths will produce wrong verdict"
+      }
+    ],
+
+    "verdict": "affected",
+    "cyclonedx_state": "affected",
+    "cyclonedx_justification": "vulnerable_code_in_execute_path",
+    "overall_confidence": "high",
+    "context_dependent": true,
+    "context_note": "Verdict is affected for Spring Framework as a library when aalto-xml is on the runtime classpath. The CVSS Low attack complexity confirms exploitation requires no special conditions beyond classpath presence and XML input acceptance.",
+
+    "hitl_required": true,
+    "hitl_reason": "CVSS score 7.5 exceeds pipeline threshold of 7.0. Human reviewer must approve before VEX is signed.",
+
+    "analysis_method": "hybrid",
+    "analysis_steps": [
+      "SBOM optional scope inspection (deterministic)",
+      "DefaultDocumentLoader source review (deterministic, red herring)",
+      "Repository-wide source search for aalto-xml invocations (deterministic)",
+      "XmlEventDecoder runtime selection logic analysis (deterministic)",
+      "Exploitability condition assessment against CVSS metrics (semantic reasoning)"
+    ],
+
+    "benchmark_metadata": {
+      "difficulty": "hard",
+      "difficulty_reason": "Two sequential red herrings before decisive finding. Requires multi-file source analysis beyond SBOM. Tests pipeline depth.",
+      "interesting_because": [
+        "Optional dependency that is actively preferred at runtime when present",
+        "Multiple XML processing paths in same project with different parsers",
+        "Correct verdict requires source code search, not just SBOM or build file inspection",
+        "Demonstrates insufficiency of SBOM-only VEX analysis"
+      ],
+      "key_lesson": "SBOM-level analysis alone is insufficient for optional dependencies that are actively selected at runtime. Source code analysis is required.",
+      "reviewer": {
+        "id": "johanna_curiel",
+        "organization": "OWASP",
+        "expertise": "java_supply_chain_security",
+        "independent_validation_required": true
+      },
+      "inter_rater": {
+        "second_reviewer_verdict": null,
+        "agreement": null,
+        "disagreement_node": null,
+        "status": "pending_second_review"
+      },
+      "time_spent_minutes": null,
+      "annotation_date": "2026-05-15"
+    }
+  }
+}
