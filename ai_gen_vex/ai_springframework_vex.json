@@ -1,1 +1,48 @@
+      "algorithm": "RSASSA-PSS",
+      "status": "signed-audit-logged",
+      "keyId": "key-antigravity-vex-agent-001"
+    }
+  },
+  "vulnerabilities": [
+    {
+      "id": "GHSA-8gc5-j5rx-235r",
+      "affects": [
+        {
+          "ref": "pkg:npm/fast-xml-parser@5.3.8"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "vulnerable_code_not_in_execute_path",
+        "detail": "fast-xml-parser@5.3.8 is listed in the project dependencies, but no imports or references to fast-xml-parser exist in the application source code files."
+      }
+    },
+    {
+      "id": "GHSA-gh4j-gqv2-49f6",
+      "affects": [
+        {
+          "ref": "pkg:npm/fast-xml-parser@5.3.8"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "vulnerable_code_not_in_execute_path",
+        "detail": "fast-xml-parser@5.3.8 is listed in the project dependencies, but no imports or references to fast-xml-parser exist in the application source code files."
+      }
+    },
+    {
+      "id": "GHSA-jp2q-39xq-3w4g",
+      "affects": [
+        {
+          "ref": "pkg:npm/fast-xml-parser@5.3.8"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "vulnerable_code_not_in_execute_path",
+        "detail": "fast-xml-parser@5.3.8 is listed in the project dependencies, but no imports or references to fast-xml-parser exist in the application source code files."
+      }
+    }
+  ]
+}
 
