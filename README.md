@@ -1,4 +1,7 @@
 # SBOM → VEX Agent
+## UPDATE [15 Nov 2026]
+Microsoft has stopped the development of AutoGen. Therefore we are re-writting the project to use MS Agent Framework
+https://github.com/microsoft/agent-framework 
 
 > Automatically generate signed CycloneDX VEX documents from SBOMs using a secure multi-agent AI pipeline, built in accordance with the OWASP GenAI Security Project guidelines.
 
@@ -17,7 +20,7 @@ Manual VEX generation is time-consuming and does not scale. A skilled analyst ca
 
 This project automates that reasoning pipeline — securely, without vendor lock-in, with all data remaining on your infrastructure.
 
-> **Real-world motivation:** In 2024, security researcher Johanna Curiel documented exactly this problem while analysing the Kubernetes Java Client ([LinkedIn article](https://www.linkedin.com/pulse/analysing-supply-chain-vulnerabilities-kubernetes-java-curiel/)). The OSV scanner identified a high-risk CVE in `com.diffplug.spotless:spotless-maven-plugin 1.17.0` in seconds. Determining it was `not_affected` (build-time plugin, never executed at runtime) took hours of manual analysis. This project automates that reasoning step.
+> **Real-world motivation:** In 2024, security researcher Johanna Curiel documented exactly this problem while analysing the Kubernetes Java Client. The OSV scanner identified a high-risk CVE in `com.diffplug.spotless:spotless-maven-plugin 1.17.0` in seconds. Determining it was `not_affected` (build-time plugin, never executed at runtime) took hours of manual analysis. This project automates that reasoning step.
 
 ---
 
