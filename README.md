@@ -135,8 +135,14 @@ python -m vllm.entrypoints.openai.api_server \
   --host 0.0.0.0 --port 8000
 ```
 
-### 3. Run the agent on an SBOM
+### 3. Run the Interactive Web Dashboard (or CLI)
 
+**Web Interface (Live Streaming Dashboard on `http://localhost:5080`):**
+```bash
+dotnet run --project SbomVexAgent -- ui --port 5080
+```
+
+**Command-Line Interface (CLI):**
 ```bash
 dotnet run --project SbomVexAgent -- analyse \
   --sbom examples/sample-sbom.json \
@@ -178,7 +184,9 @@ GPG_KEY_ID=                               # optional: custom key ID
 SBOM-VEX-Taint-Analysis/
 ├── SbomVexAgent/
 │   ├── SbomVexAgent.csproj                # .NET C# project with Microsoft.Agents.AI & Workflows
-│   ├── Program.cs                         # CLI entrypoint (Zone 1 -> Zone 2 -> Zone 3 -> Zone 4)
+│   ├── Program.cs                         # CLI & Web UI entrypoint (Zone 1 -> Zone 2 -> Zone 3 -> Zone 4)
+│   ├── Web/
+│   │   └── WebDashboardServer.cs          # Interactive SSE Web Dashboard on http://localhost:5080
 │   ├── Models/
 │   │   └── VexModels.cs                   # CycloneDX 1.6 VEX, SBOM, CVE Intel & Signed RAG models
 │   ├── Zone1/

@@ -37,13 +37,15 @@ public sealed partial class MultiAgentVexPipeline
     private readonly string _apiKey;
     private readonly OwaspGuardrailMiddleware _guardrails;
     private readonly TimeSpan _perAgentTimeout;
+    private readonly Action<string, string>? _onLogEvent;
 
     public MultiAgentVexPipeline(
         string? endpointUrl = null,
         string? modelId = null,
         string? apiKey = null,
         OwaspGuardrailMiddleware? guardrails = null,
-        TimeSpan? perAgentTimeout = null)
+        TimeSpan? perAgentTimeout = null,
+        Action<string, string>? onLogEvent = null)
     {
         _endpointUrl = endpointUrl
             ?? Environment.GetEnvironmentVariable("VLLM_BASE_URL")
@@ -60,6 +62,19 @@ public sealed partial class MultiAgentVexPipeline
 
         _guardrails = guardrails ?? new OwaspGuardrailMiddleware();
         _perAgentTimeout = perAgentTimeout ?? TimeSpan.FromSeconds(DefaultPerAgentTimeoutSeconds);
+        _onLogEvent = onLogEvent;
+    }
+
+    private void EmitLog(string category, string message)
+    {
+        Console.WriteLine(message);
+        _onLogEvent?.Invoke(category, message);
+    }
+
+    private void EmitToken(string agentName, string token)
+    {
+        Console.Write(token);
+        _onLogEvent?.Invoke($"stream:{agentName}", token);
     }
 
     /// <summary>
@@ -100,7 +115,7 @@ public sealed partial class MultiAgentVexPipeline
             timeoutCts.CancelAfter(_perAgentTimeout);
 
             var sw = Stopwatch.StartNew();
-            Console.WriteLine($"\n[{DateTime.UtcNow:HH:mm:ss} UTC] >>> [{agentName}] STARTING (timeout: {_perAgentTimeout.TotalSeconds:F0}s)...");
+            EmitLog("agent:start", $"[{DateTime.UtcNow:HH:mm:ss} UTC] >>> [{agentName}] STARTING (timeout: {_perAgentTimeout.TotalSeconds:F0}s)...");
             Console.Write($"[{agentName} stream] ");
 
             var updates = new List<AgentResponseUpdate>();
@@ -113,18 +128,18 @@ public sealed partial class MultiAgentVexPipeline
                     updates.Add(update);
                     if (!string.IsNullOrEmpty(update.Text))
                     {
-                        Console.Write(update.Text);
+                        EmitToken(agentName, update.Text);
                         streamedChunks++;
                     }
                     else if (streamedChunks == 0 && updates.Count % 15 == 0)
                     {
-                        Console.Write(".");
+                        EmitToken(agentName, ".");
                     }
                 }
 
                 sw.Stop();
                 Console.WriteLine();
-                Console.WriteLine($"[{DateTime.UtcNow:HH:mm:ss} UTC] <<< [{agentName}] COMPLETED in {sw.Elapsed.TotalSeconds:F1}s.");
+                EmitLog("agent:done", $"[{DateTime.UtcNow:HH:mm:ss} UTC] <<< [{agentName}] COMPLETED in {sw.Elapsed.TotalSeconds:F1}s (Pipeline Tokens: {_guardrails.AccumulatedTokens}/{OwaspGuardrailMiddleware.DefaultTokenBudget}).");
                 return updates.ToAgentResponse();
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
@@ -132,7 +147,7 @@ public sealed partial class MultiAgentVexPipeline
                 sw.Stop();
                 Console.WriteLine();
                 string errMsg = $"[{DateTime.UtcNow:HH:mm:ss} UTC] !!! [{agentName}] TIMED OUT after {sw.Elapsed.TotalSeconds:F1}s (limit: {_perAgentTimeout.TotalSeconds:F0}s). Failing fast.";
-                Console.WriteLine(errMsg);
+                EmitLog("agent:error", errMsg);
                 throw new TimeoutException(errMsg);
             }
         }
@@ -148,7 +163,7 @@ public sealed partial class MultiAgentVexPipeline
             timeoutCts.CancelAfter(_perAgentTimeout);
 
             var sw = Stopwatch.StartNew();
-            Console.WriteLine($"\n[{DateTime.UtcNow:HH:mm:ss} UTC] >>> [{agentName}] STARTING (timeout: {_perAgentTimeout.TotalSeconds:F0}s)...");
+            EmitLog("agent:start", $"[{DateTime.UtcNow:HH:mm:ss} UTC] >>> [{agentName}] STARTING (timeout: {_perAgentTimeout.TotalSeconds:F0}s)...");
             Console.Write($"[{agentName} stream] ");
 
             int streamedChunks = 0;
@@ -173,19 +188,19 @@ public sealed partial class MultiAgentVexPipeline
                     sw.Stop();
                     Console.WriteLine();
                     string errMsg = $"[{DateTime.UtcNow:HH:mm:ss} UTC] !!! [{agentName}] TIMED OUT after {sw.Elapsed.TotalSeconds:F1}s (limit: {_perAgentTimeout.TotalSeconds:F0}s). Failing fast.";
-                    Console.WriteLine(errMsg);
+                    EmitLog("agent:error", errMsg);
                     throw new TimeoutException(errMsg);
                 }
 
                 totalUpdates++;
                 if (!string.IsNullOrEmpty(current.Text))
                 {
-                    Console.Write(current.Text);
+                    EmitToken(agentName, current.Text);
                     streamedChunks++;
                 }
                 else if (streamedChunks == 0 && totalUpdates % 15 == 0)
                 {
-                    Console.Write(".");
+                    EmitToken(agentName, ".");
                 }
 
                 yield return current;
@@ -193,7 +208,7 @@ public sealed partial class MultiAgentVexPipeline
 
             sw.Stop();
             Console.WriteLine();
-            Console.WriteLine($"[{DateTime.UtcNow:HH:mm:ss} UTC] <<< [{agentName}] COMPLETED in {sw.Elapsed.TotalSeconds:F1}s.");
+            EmitLog("agent:done", $"[{DateTime.UtcNow:HH:mm:ss} UTC] <<< [{agentName}] COMPLETED in {sw.Elapsed.TotalSeconds:F1}s (Pipeline Tokens: {_guardrails.AccumulatedTokens}/{OwaspGuardrailMiddleware.DefaultTokenBudget}).");
         }
 
         return guardrailed
@@ -342,7 +357,7 @@ public sealed partial class MultiAgentVexPipeline
         var cveTools = new CveIntelligenceTools();
         var ragAndCodeTools = new CodebaseAndRagTools(workspacePath);
 
-        Console.WriteLine("[Zone 3] Gathering OSV/NVD/EPSS intelligence, codebase taint/reference paths, and signed RAG vectors...");
+        EmitLog("zone3:info", "[Zone 3] Gathering OSV/NVD/EPSS intelligence, codebase taint/reference paths, and signed RAG vectors...");
         var contextData = new List<(SbomComponent Component, List<VulnerabilityIntel> Vulns, string CodeSearch, string RagHistory)>();
 
         foreach (var comp in components)
@@ -406,7 +421,7 @@ public sealed partial class MultiAgentVexPipeline
 
         if (contextData.Count == 0)
         {
-            Console.WriteLine("[Zone 3] No vulnerabilities found across SBOM components.");
+            EmitLog("zone3:info", "[Zone 3] No vulnerabilities found across SBOM components.");
             return (new CycloneDxVexDocument
             {
                 SerialNumber = metadata.SerialNumber,
@@ -416,11 +431,11 @@ public sealed partial class MultiAgentVexPipeline
 
         // Build the multi-agent workflow using Microsoft.Agents.AI.Workflows
         var (workflow, orchestratorAgent, _) = BuildAgentWorkflow(cveTools, ragAndCodeTools);
-        Console.WriteLine($"[Zone 3] Initialized Microsoft Agent Framework Workflow '{workflow.Name}' (StartExecutor: {workflow.StartExecutorId})");
-        Console.WriteLine($"[Zone 3] Configured LLM Endpoint: {_endpointUrl} | Model: {_modelId} | Per-Agent Timeout: {_perAgentTimeout.TotalSeconds:F0}s");
+        EmitLog("zone3:info", $"[Zone 3] Initialized Microsoft Agent Framework Workflow '{workflow.Name}' (StartExecutor: {workflow.StartExecutorId})");
+        EmitLog("zone3:info", $"[Zone 3] Configured LLM Endpoint: {_endpointUrl} | Model: {_modelId} | Per-Agent Timeout: {_perAgentTimeout.TotalSeconds:F0}s");
 
         string prompt = BuildOrchestrationPrompt(metadata, contextData);
-        Console.WriteLine($"[Zone 3] Constructed bounded prompt context ({prompt.Length} chars / ~{Math.Max(1, prompt.Length / 4)} est. tokens, budget <= {MaxTotalPromptChars} chars).");
+        EmitLog("zone3:info", $"[Zone 3] Constructed bounded prompt context ({prompt.Length} chars / ~{Math.Max(1, prompt.Length / 4)} est. tokens, budget <= {MaxTotalPromptChars} chars).");
 
         // OWASP LLM05: Improper Output Handling — Schema validation with retry on failure
         const int maxAttempts = 2;
@@ -428,7 +443,7 @@ public sealed partial class MultiAgentVexPipeline
         {
             try
             {
-                Console.WriteLine($"[Zone 3] Running Microsoft Agent Framework multi-agent pipeline (Attempt {attempt}/{maxAttempts})...");
+                EmitLog("zone3:info", $"[Zone 3] Running Microsoft Agent Framework multi-agent pipeline (Attempt {attempt}/{maxAttempts})...");
                 AgentResponse response = await orchestratorAgent.RunAsync(prompt, cancellationToken: cancellationToken);
 
                 var errorContents = response.Messages
@@ -438,7 +453,7 @@ public sealed partial class MultiAgentVexPipeline
 
                 if (errorContents.Count > 0)
                 {
-                    Console.WriteLine($"[Zone 3 | LLM Endpoint Notice] Workflow halted on agent error/timeout: {errorContents[0].Message?.Split('\n')[0]}");
+                    EmitLog("zone3:warn", $"[Zone 3 | LLM Endpoint Notice] Workflow halted on agent error/timeout: {errorContents[0].Message?.Split('\n')[0]}");
                     break;
                 }
 
@@ -448,21 +463,21 @@ public sealed partial class MultiAgentVexPipeline
                     parsedVex is not null &&
                     parsedVex.Vulnerabilities.Count > 0)
                 {
-                    Console.WriteLine("[Zone 3 | LLM05 Validator] CycloneDX 1.6 VEX output schema validated successfully.");
+                    EmitLog("zone3:success", "[Zone 3 | LLM05 Validator] CycloneDX 1.6 VEX output schema validated successfully.");
                     return (parsedVex, contextData);
                 }
 
-                Console.WriteLine($"[Zone 3 | LLM05 Validator] Agent output did not pass CycloneDX 1.6 VEX schema validation on attempt {attempt}.");
+                EmitLog("zone3:warn", $"[Zone 3 | LLM05 Validator] Agent output did not pass CycloneDX 1.6 VEX schema validation on attempt {attempt}.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Zone 3 | LLM Endpoint Notice] Pipeline execution aborted ({ex.GetType().Name}: {ex.Message.Split('\n')[0]}).");
+                EmitLog("zone3:warn", $"[Zone 3 | LLM Endpoint Notice] Pipeline execution aborted ({ex.GetType().Name}: {ex.Message.Split('\n')[0]}).");
                 break;
             }
         }
 
         // Deterministic Evidence-Based Synthesis if local Ollama/vLLM server is offline or times out
-        Console.WriteLine("[Zone 3] Synthesizing CycloneDX 1.6 VEX verdicts from collected OSV/NVD/EPSS, Codebase Taint Search, and Provenance-Verified RAG evidence...");
+        EmitLog("zone3:info", "[Zone 3] Synthesizing CycloneDX 1.6 VEX verdicts from collected OSV/NVD/EPSS, Codebase Taint Search, and Provenance-Verified RAG evidence...");
         CycloneDxVexDocument synthesized = SynthesizeFromEvidence(metadata, contextData);
         return (synthesized, contextData);
     }

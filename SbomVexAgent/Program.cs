@@ -1,4 +1,5 @@
 using System.Text.Json;
+using SbomVexAgent.Web;
 using SbomVexAgent.Zone1;
 using SbomVexAgent.Zone2;
 using SbomVexAgent.Zone3;
@@ -16,11 +17,22 @@ public static class Program
         string? outputPath = null;
         string workspacePath = ".";
         bool interactiveHitl = false;
+        bool webUiMode = false;
+        int webPort = 5080;
 
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
             {
+                case "ui":
+                case "web":
+                case "--ui":
+                case "--web":
+                    webUiMode = true;
+                    break;
+                case "--port" when i + 1 < args.Length && int.TryParse(args[++i], out int p):
+                    webPort = p;
+                    break;
                 case "analyse":
                 case "analyze":
                     break;
@@ -41,6 +53,12 @@ public static class Program
                     PrintUsage();
                     return 0;
             }
+        }
+
+        if (webUiMode)
+        {
+            await WebDashboardServer.RunAsync(webPort, workspacePath);
+            return 0;
         }
 
         if (string.IsNullOrWhiteSpace(sbomPath) || string.IsNullOrWhiteSpace(outputPath))
