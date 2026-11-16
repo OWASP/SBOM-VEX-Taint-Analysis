@@ -1,0 +1,56 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:spring-web-aalto-xml-dos-001",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-11-16T08:31:17Z",
+    "tools": [
+      {
+        "name": "sbom-vex-agent",
+        "version": "2.0.0-maf-csharp",
+        "vendor": "OWASP SBOM-VEX-Taint-Analysis (Microsoft Agent Framework C#)"
+      }
+    ],
+    "signature": {
+      "algorithm": "RSASSA-PSS",
+      "status": "signed-audit-logged",
+      "keyId": "cosign-keyless-sigstore-oidc-001",
+      "sbomSha256": "03d17fc5b6978b2db7496b72338c34ecd6bb120963a5ea1846164cd277711f4f",
+      "vexPayloadSha256": "4a58cfa808bd9e40db7b4ddc2ca966e6e1f263eb2b346da8ee18e5f43cb9eba7",
+      "value": "m/2r1Rg9mrzDPisZyX8sH0xknBuoJ75PM0BwcL58Ws7zLN69J3uxbPqfYViSdZa7..."
+    }
+  },
+  "vulnerabilities": [
+    {
+      "id": "CVE-2024-AALTO-SPRING-WEB",
+      "affects": [
+        {
+          "ref": "pkg:maven/com.fasterxml/aalto-xml@1.3.2"
+        }
+      ],
+      "analysis": {
+        "state": "affected",
+        "justification": "vulnerable_code_in_execute_path",
+        "detail": "aalto-xml@1.3.2 (declared scope: \u0027optional\u0027) is actively referenced and invoked in the codebase (src/main/java/org/springframework/http/codec/xml/XmlEventDecoder.java:11: \u0022com.fasterxml.aalto.AsyncXMLStreamReader\u0022,). Runtime reachability confirmed.",
+        "response": [
+          "will_not_fix"
+        ],
+        "workaround": "Exclude aalto-xml from the runtime classpath if not required, or restrict untrusted input reaching this parser."
+      }
+    },
+    {
+      "id": "CVE-2021-37714",
+      "affects": [
+        {
+          "ref": "pkg:maven/com.diffplug.spotless/spotless-maven-plugin@1.17.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "vulnerable_code_not_in_execute_path",
+        "detail": "spotless-maven-plugin@1.17.0 is a build-time/excluded plugin (scope: \u0027excluded\u0027) and is not present or executed in the deployed runtime classpath."
+      }
+    }
+  ]
+}
