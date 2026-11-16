@@ -1,4 +1,6 @@
 using System.ClientModel;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -18,21 +20,30 @@ namespace SbomVexAgent.Zone3;
 ///   1. CVE Analyst Agent (NVD v2 + OSV.dev + EPSS per component)
 ///   2. Exploit Reasoner Agent (Codebase call-graph / taint search + Provenance-verified Qdrant RAG + LLM reasoning)
 ///   3. VEX Writer Agent (CycloneDX 1.6 schema-validated structured VEX emitter)
-/// Orchestrated sequentially via <see cref="AgentWorkflowBuilder.BuildSequential(string, IEnumerable{AIAgent})"/>
-/// and wrapped in Zone 2 <see cref="OwaspGuardrailMiddleware"/>.
+/// Orchestrated sequentially via <see cref="AgentWorkflowBuilder.BuildSequential(string, bool, IEnumerable{AIAgent})"/>
+/// with per-agent start/end timestamps, live token streaming progress, strict 90s per-agent CancellationToken timeouts,
+/// and truncated prompt context budgets.
 /// </summary>
 public sealed partial class MultiAgentVexPipeline
 {
+    public const int DefaultPerAgentTimeoutSeconds = 90;
+    public const int MaxVulnDescriptionChars = 350;
+    public const int MaxCodebaseContextChars = 900;
+    public const int MaxRagContextChars = 700;
+    public const int MaxTotalPromptChars = 3500;
+
     private readonly string _endpointUrl;
     private readonly string _modelId;
     private readonly string _apiKey;
     private readonly OwaspGuardrailMiddleware _guardrails;
+    private readonly TimeSpan _perAgentTimeout;
 
     public MultiAgentVexPipeline(
         string? endpointUrl = null,
         string? modelId = null,
         string? apiKey = null,
-        OwaspGuardrailMiddleware? guardrails = null)
+        OwaspGuardrailMiddleware? guardrails = null,
+        TimeSpan? perAgentTimeout = null)
     {
         _endpointUrl = endpointUrl
             ?? Environment.GetEnvironmentVariable("VLLM_BASE_URL")
@@ -41,13 +52,14 @@ public sealed partial class MultiAgentVexPipeline
 
         _modelId = modelId
             ?? Environment.GetEnvironmentVariable("LLM_MODEL")
-            ?? "Qwen2.5-Coder-32B-Instruct";
+            ?? "gpt-oss:latest";
 
         _apiKey = apiKey
             ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY")
             ?? "local-ollama-or-vllm";
 
         _guardrails = guardrails ?? new OwaspGuardrailMiddleware();
+        _perAgentTimeout = perAgentTimeout ?? TimeSpan.FromSeconds(DefaultPerAgentTimeoutSeconds);
     }
 
     /// <summary>
@@ -58,7 +70,7 @@ public sealed partial class MultiAgentVexPipeline
         var options = new OpenAIClientOptions
         {
             Endpoint = new Uri(_endpointUrl),
-            NetworkTimeout = TimeSpan.FromSeconds(45)
+            NetworkTimeout = _perAgentTimeout + TimeSpan.FromSeconds(10)
         };
 
         var openAiClient = new OpenAIClient(new ApiKeyCredential(_apiKey), options);
@@ -68,92 +80,243 @@ public sealed partial class MultiAgentVexPipeline
     }
 
     /// <summary>
-    /// Builds the 3 specialized <see cref="AIAgent"/> instances, wraps each in Zone 2 OWASP Guardrails
-    /// (<c>.AsBuilder().Use(...).Build()</c>), and composes them into a Microsoft Agent Framework
-    /// <see cref="Workflow"/> via <see cref="AgentWorkflowBuilder.BuildSequential(string, IEnumerable{AIAgent})"/>.
+    /// Wraps an <see cref="AIAgent"/> with:
+    /// 1. Zone 2 OWASP Guardrails (<see cref="OwaspGuardrailMiddleware"/>), and
+    /// 2. Live console telemetry (start/end timestamps, elapsed time, live streaming token output, and strict per-agent timeout).
+    /// </summary>
+    private AIAgent WrapWithTelemetryAndTimeout(AIAgent rawAgent)
+    {
+        AIAgent guardrailed = _guardrails.WrapAgent(rawAgent);
+        string agentName = rawAgent.Name ?? rawAgent.Id;
+
+        async Task<AgentResponse> RunWithTelemetryAsync(
+            IEnumerable<ChatMessage> messages,
+            AgentSession? session,
+            AgentRunOptions? options,
+            AIAgent inner,
+            CancellationToken ct)
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(_perAgentTimeout);
+
+            var sw = Stopwatch.StartNew();
+            Console.WriteLine($"\n[{DateTime.UtcNow:HH:mm:ss} UTC] >>> [{agentName}] STARTING (timeout: {_perAgentTimeout.TotalSeconds:F0}s)...");
+            Console.Write($"[{agentName} stream] ");
+
+            var updates = new List<AgentResponseUpdate>();
+            int streamedChunks = 0;
+
+            try
+            {
+                await foreach (var update in inner.RunStreamingAsync(messages, session, options, timeoutCts.Token).ConfigureAwait(false))
+                {
+                    updates.Add(update);
+                    if (!string.IsNullOrEmpty(update.Text))
+                    {
+                        Console.Write(update.Text);
+                        streamedChunks++;
+                    }
+                    else if (streamedChunks == 0 && updates.Count % 15 == 0)
+                    {
+                        Console.Write(".");
+                    }
+                }
+
+                sw.Stop();
+                Console.WriteLine();
+                Console.WriteLine($"[{DateTime.UtcNow:HH:mm:ss} UTC] <<< [{agentName}] COMPLETED in {sw.Elapsed.TotalSeconds:F1}s.");
+                return updates.ToAgentResponse();
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                sw.Stop();
+                Console.WriteLine();
+                string errMsg = $"[{DateTime.UtcNow:HH:mm:ss} UTC] !!! [{agentName}] TIMED OUT after {sw.Elapsed.TotalSeconds:F1}s (limit: {_perAgentTimeout.TotalSeconds:F0}s). Failing fast.";
+                Console.WriteLine(errMsg);
+                throw new TimeoutException(errMsg);
+            }
+        }
+
+        async IAsyncEnumerable<AgentResponseUpdate> RunStreamingWithTelemetryAsync(
+            IEnumerable<ChatMessage> messages,
+            AgentSession? session,
+            AgentRunOptions? options,
+            AIAgent inner,
+            [EnumeratorCancellation] CancellationToken ct)
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(_perAgentTimeout);
+
+            var sw = Stopwatch.StartNew();
+            Console.WriteLine($"\n[{DateTime.UtcNow:HH:mm:ss} UTC] >>> [{agentName}] STARTING (timeout: {_perAgentTimeout.TotalSeconds:F0}s)...");
+            Console.Write($"[{agentName} stream] ");
+
+            int streamedChunks = 0;
+            int totalUpdates = 0;
+
+            await using var enumerator = inner.RunStreamingAsync(messages, session, options, timeoutCts.Token)
+                .GetAsyncEnumerator(timeoutCts.Token);
+
+            while (true)
+            {
+                AgentResponseUpdate current;
+                try
+                {
+                    if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
+                    {
+                        break;
+                    }
+                    current = enumerator.Current;
+                }
+                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+                {
+                    sw.Stop();
+                    Console.WriteLine();
+                    string errMsg = $"[{DateTime.UtcNow:HH:mm:ss} UTC] !!! [{agentName}] TIMED OUT after {sw.Elapsed.TotalSeconds:F1}s (limit: {_perAgentTimeout.TotalSeconds:F0}s). Failing fast.";
+                    Console.WriteLine(errMsg);
+                    throw new TimeoutException(errMsg);
+                }
+
+                totalUpdates++;
+                if (!string.IsNullOrEmpty(current.Text))
+                {
+                    Console.Write(current.Text);
+                    streamedChunks++;
+                }
+                else if (streamedChunks == 0 && totalUpdates % 15 == 0)
+                {
+                    Console.Write(".");
+                }
+
+                yield return current;
+            }
+
+            sw.Stop();
+            Console.WriteLine();
+            Console.WriteLine($"[{DateTime.UtcNow:HH:mm:ss} UTC] <<< [{agentName}] COMPLETED in {sw.Elapsed.TotalSeconds:F1}s.");
+        }
+
+        return guardrailed
+            .AsBuilder()
+            .Use(runFunc: RunWithTelemetryAsync, runStreamingFunc: RunStreamingWithTelemetryAsync)
+            .Build();
+    }
+
+    /// <summary>
+    /// Builds the 3 specialized <see cref="AIAgent"/> instances, wraps each in Zone 2 OWASP Guardrails + Per-Agent Timeout/Streaming Telemetry,
+    /// and composes them into a Microsoft Agent Framework <see cref="Workflow"/> via <see cref="AgentWorkflowBuilder.BuildSequential(string, bool, IEnumerable{AIAgent})"/>.
     /// </summary>
     public (Workflow MultiAgentWorkflow, AIAgent OrchestratorWorkflowAgent, AIAgent VexWriterAgent) BuildAgentWorkflow(
         CveIntelligenceTools cveTools,
-        CodebaseAndRagTools ragAndCodeTools)
+        CodebaseAndRagTools ragAndCodeTools,
+        bool enableLiveToolCalling = false)
     {
         IChatClient baseChatClient = CreateChatClient();
 
-        // 1. CVE Analyst Agent (Equipped with read-only OSV, NVD v2, and EPSS AIFunctions)
-        IList<AITool> analystTools =
-        [
-            AIFunctionFactory.Create(cveTools.QueryOsvVulnerabilitiesAsync),
-            AIFunctionFactory.Create(cveTools.EnrichVulnerabilityDetailsAsync)
-        ];
+        // 1. CVE Analyst Agent
+        IList<AITool>? analystTools = enableLiveToolCalling
+            ? [
+                AIFunctionFactory.Create(cveTools.QueryOsvVulnerabilitiesAsync),
+                AIFunctionFactory.Create(cveTools.EnrichVulnerabilityDetailsAsync)
+              ]
+            : null;
 
-        AIAgent cveAnalystRaw = baseChatClient.AsAIAgent(
-            name: "CVE_Analyst",
-            description: "Queries OSV.dev, NVD v2, and FIRST EPSS for each SBOM component and summarizes vulnerability severities.",
-            instructions: """
-                You are the CVE Analyst Agent in an OWASP SBOM-to-VEX pipeline.
-                Your responsibility is to examine the sanitized SBOM components and the collected OSV/NVD/EPSS intelligence.
-                For each component with vulnerabilities:
-                1. Summarize the vulnerability ID (CVE / GHSA), CVSS v3 score and vector, severity, and EPSS exploitability probability.
-                2. Highlight whether CVSS >= 7.0 (which mandates a Zone 4 Human-in-the-Loop review gate).
-                3. Do NOT guess reachability yet; pass a structured technical briefing to the Exploit_Reasoner agent.
-                """,
-            tools: analystTools);
+        AIAgent cveAnalystRaw = baseChatClient.AsAIAgent(new ChatClientAgentOptions
+        {
+            Name = "CVE_Analyst",
+            Description = "Analyzes OSV.dev, NVD v2, and FIRST EPSS intelligence for each SBOM component and summarizes vulnerability severities.",
+            ChatOptions = new ChatOptions
+            {
+                Instructions = """
+                    /no_think
+                    You are the CVE Analyst Agent in an OWASP SBOM-to-VEX pipeline.
+                    Examine the sanitized SBOM components and the collected OSV/NVD/EPSS intelligence, codebase search results, and signed RAG history provided in the input.
+                    Output a concise, structured technical briefing (< 200 words) that preserves for each component:
+                    1. Exact Component PURL, Name@Version, and declared SBOM Scope.
+                    2. Vulnerability ID (CVE / GHSA), CVSS v3 score/severity, and whether CVSS >= 7.0 (Zone 4 HITL gate).
+                    3. Exact Codebase Search Findings and Provenance-Verified RAG rulings so the Exploit_Reasoner can evaluate reachability.
+                    Be direct and concise. Do not output lengthy reasoning chains.
+                    """,
+                Temperature = 0.1f,
+                MaxOutputTokens = 500,
+                Tools = analystTools
+            }
+        });
 
-        AIAgent cveAnalyst = _guardrails.WrapAgent(cveAnalystRaw);
+        AIAgent cveAnalyst = WrapWithTelemetryAndTimeout(cveAnalystRaw);
 
-        // 2. Exploit Reasoner Agent (Equipped with read-only Codebase Search & Provenance-Signed Qdrant Vector Store tools)
-        IList<AITool> reasonerTools =
-        [
-            AIFunctionFactory.Create(ragAndCodeTools.SearchCodebaseForReferences),
-            AIFunctionFactory.Create(ragAndCodeTools.QuerySignedPastVexDecisions)
-        ];
+        // 2. Exploit Reasoner Agent
+        IList<AITool>? reasonerTools = enableLiveToolCalling
+            ? [
+                AIFunctionFactory.Create(ragAndCodeTools.SearchCodebaseForReferences),
+                AIFunctionFactory.Create(ragAndCodeTools.QuerySignedPastVexDecisions)
+              ]
+            : null;
 
-        AIAgent exploitReasonerRaw = baseChatClient.AsAIAgent(
-            name: "Exploit_Reasoner",
-            description: "Performs static codebase call-graph/taint reachability analysis and consults provenance-signed RAG decisions.",
-            instructions: """
-                You are the Exploit Reasoner Agent in an OWASP SBOM-to-VEX pipeline.
-                You receive the CVE Analyst's vulnerability briefing along with codebase search evidence and provenance-verified RAG history.
-                Apply strict reachability & taint analysis rules:
-                - Rule 1 (Build-time / Excluded plugins): If a component is a build-time, test, or formatting plugin (e.g. spotless-maven-plugin) or has 'excluded' scope and is never loaded at runtime, classify as state='not_affected', justification='vulnerable_code_not_in_execute_path'.
-                - Rule 2 (Optional dependencies with active runtime selection): Beware of the 'optional scope red herring'! If a component is marked 'optional' in the SBOM (such as com.fasterxml/aalto-xml), check the codebase evidence carefully. If source files (such as XmlEventDecoder.java) check ClassUtils.isPresent(...) or import/invoke the library at runtime, classify as state='affected', justification='vulnerable_code_in_execute_path'.
-                - Rule 3 (Unused dependencies): If a component has zero imports or references anywhere in the application codebase, classify as state='not_affected', justification='vulnerable_code_not_in_execute_path'.
-                Provide a clear, evidence-backed verdict for every vulnerability so the VEX_Writer agent can emit the final CycloneDX 1.6 VEX JSON.
-                """,
-            tools: reasonerTools);
+        AIAgent exploitReasonerRaw = baseChatClient.AsAIAgent(new ChatClientAgentOptions
+        {
+            Name = "Exploit_Reasoner",
+            Description = "Performs static codebase call-graph/taint reachability analysis and consults provenance-signed RAG decisions.",
+            ChatOptions = new ChatOptions
+            {
+                Instructions = """
+                    /no_think
+                    You are the Exploit Reasoner Agent in an OWASP SBOM-to-VEX pipeline.
+                    Evaluate the CVE Analyst's briefing using these strict reachability & taint analysis rules:
+                    - Rule 1 (Build-time / Excluded plugins): If a component is a build-time, test, or formatting plugin (e.g. spotless-maven-plugin) or has 'excluded' scope and is never loaded at runtime, classify as state='not_affected', justification='vulnerable_code_not_in_execute_path'.
+                    - Rule 2 (Optional dependencies with active runtime selection): If a component is marked 'optional' in the SBOM (such as com.fasterxml/aalto-xml), check the codebase evidence carefully. If source files (such as XmlEventDecoder.java) check ClassUtils.isPresent(...) or import/invoke the library at runtime, classify as state='affected', justification='vulnerable_code_in_execute_path'.
+                    - Rule 3 (Unused dependencies): If a component has zero imports or references anywhere in the application codebase, classify as state='not_affected', justification='vulnerable_code_not_in_execute_path'.
+                    Output a concise verdict list (< 200 words) for the VEX_Writer containing for each vulnerability: ID, PURL ref, state, justification, and a 1-2 sentence technical detail citing the exact file/line or scope.
+                    """,
+                Temperature = 0.1f,
+                MaxOutputTokens = 500,
+                Tools = reasonerTools
+            }
+        });
 
-        AIAgent exploitReasoner = _guardrails.WrapAgent(exploitReasonerRaw);
+        AIAgent exploitReasoner = WrapWithTelemetryAndTimeout(exploitReasonerRaw);
 
         // 3. VEX Writer Agent (Emits strict CycloneDX 1.6 VEX JSON schema)
-        AIAgent vexWriterRaw = baseChatClient.AsAIAgent(
-            name: "VEX_Writer",
-            description: "Generates a strict CycloneDX 1.6 VEX JSON document from the Exploit Reasoner's analysis.",
-            instructions: """
-                You are the CycloneDX 1.6 VEX Writer Agent.
-                Convert the vulnerability analysis and reachability verdicts from the CVE_Analyst and Exploit_Reasoner into a valid CycloneDX 1.6 VEX JSON object.
-                Output ONLY valid JSON matching the CycloneDX 1.6 VEX schema:
-                {
-                  "bomFormat": "CycloneDX",
-                  "specVersion": "1.6",
-                  "version": 1,
-                  "vulnerabilities": [
+        AIAgent vexWriterRaw = baseChatClient.AsAIAgent(new ChatClientAgentOptions
+        {
+            Name = "VEX_Writer",
+            Description = "Generates a strict CycloneDX 1.6 VEX JSON document from the Exploit Reasoner's analysis.",
+            ChatOptions = new ChatOptions
+            {
+                Instructions = """
+                    /no_think
+                    You are the CycloneDX 1.6 VEX Writer Agent.
+                    Convert the vulnerability reachability verdicts into a valid CycloneDX 1.6 VEX JSON object.
+                    Output ONLY raw JSON matching this exact structure (no markdown commentary):
                     {
-                      "id": "<CVE or GHSA ID>",
-                      "affects": [{ "ref": "<component purl>" }],
-                      "analysis": {
-                        "state": "affected | not_affected | fixed | under_investigation",
-                        "justification": "vulnerable_code_not_in_execute_path | vulnerable_code_in_execute_path | vulnerable_code_not_present | component_not_present | inline_mitigations_already_exist",
-                        "detail": "<concise technical evidence citing source files or build scope>"
-                      }
+                      "bomFormat": "CycloneDX",
+                      "specVersion": "1.6",
+                      "version": 1,
+                      "vulnerabilities": [
+                        {
+                          "id": "<CVE or GHSA ID>",
+                          "affects": [{ "ref": "<component purl>" }],
+                          "analysis": {
+                            "state": "affected | not_affected | fixed | under_investigation",
+                            "justification": "vulnerable_code_not_in_execute_path | vulnerable_code_in_execute_path | vulnerable_code_not_present | component_not_present | inline_mitigations_already_exist",
+                            "detail": "<concise technical evidence citing source files or build scope>"
+                          }
+                        }
+                      ]
                     }
-                  ]
-                }
-                """);
+                    """,
+                Temperature = 0.0f,
+                MaxOutputTokens = 700
+            }
+        });
 
-        AIAgent vexWriter = _guardrails.WrapAgent(vexWriterRaw);
+        AIAgent vexWriter = WrapWithTelemetryAndTimeout(vexWriterRaw);
 
         // 4. Orchestrator Workflow using Microsoft.Agents.AI.Workflows.AgentWorkflowBuilder
+        // chainOnlyAgentResponses: true passes only each agent's concise output forward, avoiding quadratic prompt growth
         Workflow workflow = AgentWorkflowBuilder.BuildSequential(
             workflowName: "OWASP_SBOM_VEX_MultiAgent_Pipeline",
+            chainOnlyAgentResponses: true,
             agents: [cveAnalyst, exploitReasoner, vexWriter]);
 
         AIAgent orchestratorWorkflowAgent = workflow.AsAIAgent(
@@ -166,9 +329,9 @@ public sealed partial class MultiAgentVexPipeline
     }
 
     /// <summary>
-    /// Executes the full Zone 3 pipeline: gathers deterministic baseline context, runs the Microsoft Agent Framework
-    /// multi-agent workflow (with OWASP LLM05 retry/schema validation), and falls back cleanly if the local LLM server
-    /// (Ollama / vLLM) is not currently running on the host.
+    /// Executes the full Zone 3 pipeline: gathers deterministic baseline context, truncates context to a safe prompt token budget,
+    /// runs the Microsoft Agent Framework multi-agent workflow with live streaming logs and 90s per-agent timeout,
+    /// and falls back cleanly if the local LLM server times out or is unreachable.
     /// </summary>
     public async Task<(CycloneDxVexDocument VexDocument, List<(SbomComponent Component, List<VulnerabilityIntel> Vulns, string CodeSearch, string RagHistory)> ContextData)> ExecuteAsync(
         SbomMetadata metadata,
@@ -201,7 +364,6 @@ public sealed partial class MultiAgentVexPipeline
             var searchTerms = new List<string>();
             if (!string.IsNullOrEmpty(comp.Purl))
             {
-                // e.g., pkg:maven/com.fasterxml/aalto-xml@1.3.2 -> com.fasterxml.aalto, aalto-xml
                 string withoutPrefix = comp.Purl
                     .Replace("pkg:maven/", "", StringComparison.OrdinalIgnoreCase)
                     .Replace("pkg:npm/", "", StringComparison.OrdinalIgnoreCase)
@@ -255,9 +417,10 @@ public sealed partial class MultiAgentVexPipeline
         // Build the multi-agent workflow using Microsoft.Agents.AI.Workflows
         var (workflow, orchestratorAgent, _) = BuildAgentWorkflow(cveTools, ragAndCodeTools);
         Console.WriteLine($"[Zone 3] Initialized Microsoft Agent Framework Workflow '{workflow.Name}' (StartExecutor: {workflow.StartExecutorId})");
-        Console.WriteLine($"[Zone 3] Configured LLM Endpoint: {_endpointUrl} | Model: {_modelId}");
+        Console.WriteLine($"[Zone 3] Configured LLM Endpoint: {_endpointUrl} | Model: {_modelId} | Per-Agent Timeout: {_perAgentTimeout.TotalSeconds:F0}s");
 
         string prompt = BuildOrchestrationPrompt(metadata, contextData);
+        Console.WriteLine($"[Zone 3] Constructed bounded prompt context ({prompt.Length} chars / ~{Math.Max(1, prompt.Length / 4)} est. tokens, budget <= {MaxTotalPromptChars} chars).");
 
         // OWASP LLM05: Improper Output Handling — Schema validation with retry on failure
         const int maxAttempts = 2;
@@ -275,7 +438,7 @@ public sealed partial class MultiAgentVexPipeline
 
                 if (errorContents.Count > 0)
                 {
-                    Console.WriteLine($"[Zone 3 | LLM Endpoint Notice] Local LLM server at '{_endpointUrl}' unreachable ({errorContents[0].Message?.Split('\n')[0]}).");
+                    Console.WriteLine($"[Zone 3 | LLM Endpoint Notice] Workflow halted on agent error/timeout: {errorContents[0].Message?.Split('\n')[0]}");
                     break;
                 }
 
@@ -293,15 +456,34 @@ public sealed partial class MultiAgentVexPipeline
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Zone 3 | LLM Endpoint Notice] Local LLM server at '{_endpointUrl}' unreachable or returned error ({ex.GetType().Name}: {ex.Message.Split('\n')[0]}).");
+                Console.WriteLine($"[Zone 3 | LLM Endpoint Notice] Pipeline execution aborted ({ex.GetType().Name}: {ex.Message.Split('\n')[0]}).");
                 break;
             }
         }
 
-        // Deterministic Evidence-Based Synthesis if local Ollama/vLLM server is offline during CLI run
+        // Deterministic Evidence-Based Synthesis if local Ollama/vLLM server is offline or times out
         Console.WriteLine("[Zone 3] Synthesizing CycloneDX 1.6 VEX verdicts from collected OSV/NVD/EPSS, Codebase Taint Search, and Provenance-Verified RAG evidence...");
         CycloneDxVexDocument synthesized = SynthesizeFromEvidence(metadata, contextData);
         return (synthesized, contextData);
+    }
+
+    /// <summary>
+    /// Truncates a string to a safe character budget so LLM prompt prefill stays fast.
+    /// </summary>
+    private static string TruncateToBudget(string? input, int maxChars)
+    {
+        if (string.IsNullOrEmpty(input))
+        {
+            return string.Empty;
+        }
+
+        string trimmed = input.Trim();
+        if (trimmed.Length <= maxChars)
+        {
+            return trimmed;
+        }
+
+        return trimmed[..maxChars] + $" ... [TRUNCATED {trimmed.Length - maxChars} chars for token budget]";
     }
 
     private static string BuildOrchestrationPrompt(
@@ -309,6 +491,7 @@ public sealed partial class MultiAgentVexPipeline
         List<(SbomComponent Component, List<VulnerabilityIntel> Vulns, string CodeSearch, string RagHistory)> contextData)
     {
         var sb = new StringBuilder();
+        sb.AppendLine("/no_think");
         sb.AppendLine($"Analyze the following SBOM ({metadata.Format} {metadata.SpecVersion}, Serial: {metadata.SerialNumber}) and produce a CycloneDX 1.6 VEX JSON document.");
         sb.AppendLine();
 
@@ -319,21 +502,21 @@ public sealed partial class MultiAgentVexPipeline
             sb.AppendLine($"PURL: {comp.Purl}");
             sb.AppendLine($"Declared SBOM Scope: {comp.Scope}");
             sb.AppendLine("Vulnerabilities (OSV / NVD / EPSS):");
-            foreach (var v in vulns)
+            foreach (var v in vulns.Take(5))
             {
                 sb.AppendLine($"  - ID: {v.Id}");
-                sb.AppendLine($"    Description: {v.Description}");
+                sb.AppendLine($"    Description: {TruncateToBudget(v.Description, MaxVulnDescriptionChars)}");
                 sb.AppendLine($"    CVSS Score: {(v.CvssScore?.ToString("F1") ?? "N/A")} ({v.CvssSeverity}) Vector: {v.CvssVector ?? "N/A"}");
                 sb.AppendLine($"    EPSS Probability: {v.EpssProbability:P2} (Percentile: {v.EpssPercentile:P1})");
             }
             sb.AppendLine("Static Codebase Search Results:");
-            sb.AppendLine(codeSearch);
+            sb.AppendLine(TruncateToBudget(codeSearch, MaxCodebaseContextChars));
             sb.AppendLine("Provenance-Verified Vector Store (Qdrant RAG) Past Decisions:");
-            sb.AppendLine(ragHistory);
+            sb.AppendLine(TruncateToBudget(ragHistory, MaxRagContextChars));
             sb.AppendLine();
         }
 
-        return sb.ToString();
+        return TruncateToBudget(sb.ToString(), MaxTotalPromptChars);
     }
 
     public static bool TryParseAndValidateVexJson(string rawText, string? defaultSerialNumber, out CycloneDxVexDocument? vexDoc)
@@ -375,7 +558,7 @@ public sealed partial class MultiAgentVexPipeline
             parsed.SpecVersion = "1.6";
             parsed.SerialNumber ??= defaultSerialNumber;
 
-            // Validate allowed states per CycloneDX 1.6 VEX specification
+            // Validate allowed states per CycloneDX 1.6 VEX specification and normalize Unicode hyphens in IDs
             HashSet<string> validStates = ["affected", "not_affected", "fixed", "under_investigation"];
             foreach (var v in parsed.Vulnerabilities)
             {
@@ -383,6 +566,12 @@ public sealed partial class MultiAgentVexPipeline
                 {
                     return false;
                 }
+
+                v.Id = v.Id
+                    .Replace('\u2011', '-')
+                    .Replace('\u2010', '-')
+                    .Replace('\u2013', '-')
+                    .Replace('\u2014', '-');
             }
 
             vexDoc = parsed;
