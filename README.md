@@ -7,7 +7,8 @@
 [![CycloneDX](https://img.shields.io/badge/CycloneDX-1.6-green)](https://cyclonedx.org)
 [![Microsoft Agent Framework](https://img.shields.io/badge/Microsoft%20Agent%20Framework-C%23%20%2F%20.NET-purple)](https://learn.microsoft.com/en-us/agent-framework/overview/?pivots=programming-language-csharp)
 
-<img width="1736" height="895" alt="image" src="https://github.com/user-attachments/assets/51accd5f-ffa3-44ad-b9bc-051c6e8e4265" />
+<img width="2354" height="935" alt="image" src="https://github.com/user-attachments/assets/cd8a5b11-86cf-4e5d-af2b-7a47ff61c446" />
+
 
 ---
 
