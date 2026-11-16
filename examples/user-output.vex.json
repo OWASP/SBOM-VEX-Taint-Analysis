@@ -1,0 +1,39 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "https://spdx.org/spdxdocs/protobom/a90af8c4-87a3-43f2-9d4a-4d85790970d7",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-11-16T08:32:35Z",
+    "tools": [
+      {
+        "name": "sbom-vex-agent",
+        "version": "2.0.0-maf-csharp",
+        "vendor": "OWASP SBOM-VEX-Taint-Analysis (Microsoft Agent Framework C#)"
+      }
+    ],
+    "signature": {
+      "algorithm": "RSASSA-PSS",
+      "status": "signed-audit-logged",
+      "keyId": "cosign-keyless-sigstore-oidc-001",
+      "sbomSha256": "13e6ff475d20284a3c062cc8a3fab4260276e1f7cff8c54ed5ecc89a4f77d741",
+      "vexPayloadSha256": "efb6ca35d8c78c7392ea919304229c98ae0f670375353d391954bfced95142d2",
+      "value": "CCvES24DtU77\u002BGN5rcU1nXtpRuKNIbxQoouaQPcCfVkV42m3arLeurQWGr7m3YGl..."
+    }
+  },
+  "vulnerabilities": [
+    {
+      "id": "GHSA-8gc5-j5rx-235r",
+      "affects": [
+        {
+          "ref": "pkg:npm/fast-xml-parser@5.3.8"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "vulnerable_code_not_in_execute_path",
+        "detail": "fast-xml-parser@5.3.8 is listed in the SBOM, but static codebase analysis found zero imports or references in the application source files."
+      }
+    }
+  ]
+}

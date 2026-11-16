@@ -1,0 +1,20 @@
+# .NET / C# Build Artifacts
+bin/
+obj/
+out/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+.idea/
+.vscode/
+
+# Environment & Secrets
+.env
+*.pfx
+*.key
+
+# OS Metadata
+.DS_Store
+Thumbs.db
