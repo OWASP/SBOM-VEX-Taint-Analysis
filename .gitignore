@@ -18,3 +18,5 @@ out/
 # OS Metadata
 .DS_Store
 Thumbs.db
+.local/
+.dotnet/
